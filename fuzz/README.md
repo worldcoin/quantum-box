@@ -1,4 +1,4 @@
-# Fuzzing Holocron
+# Fuzzing Quantum Box
 
 Fuzzy testing with [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz). Requires a nightly toolchain:
 
