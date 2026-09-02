@@ -31,4 +31,4 @@ jobs:
       - name: Run release-plz
         uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131 https://github.com/release-plz/action/releases/tag/v0.5.131
         env:
-          GITHUB_TOKEN: ${{ secrets.DEPLOY_BOT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
