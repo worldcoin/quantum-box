@@ -8,8 +8,8 @@
 //! 2. Definitely-malformed input is rejected with an `Err` for every `info`
 //!    value. "Definitely malformed" is the subset we can prove
 
-use holocron::{PublicKey, SecretKey};
 use libfuzzer_sys::fuzz_target;
+use quantum_box::{PublicKey, SecretKey};
 use std::sync::LazyLock;
 
 /// A fixed recipient. Key material is not the fuzzed surface here — the
@@ -34,7 +34,7 @@ fuzz_target!(|data: &[u8]| {
 
     // One unseal per info variant, reused for both the no-panic check and the
     // rejection assertion.
-    for info in [None, Some(&b"holocron-fuzz"[..])] {
+    for info in [None, Some(&b"quantum-box-fuzz"[..])] {
         let result = SecretKey::unseal(recipient, data, info);
         assert!(
             !provably_malformed || result.is_err(),

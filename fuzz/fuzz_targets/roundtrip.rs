@@ -6,8 +6,8 @@
 //! encapsulation randomness is drawn internally from the OS CSPRNG.
 
 use arbitrary::Arbitrary;
-use holocron::{Error, PublicKey, SecretKey};
 use libfuzzer_sys::fuzz_target;
+use quantum_box::{Error, PublicKey, SecretKey};
 
 #[derive(Debug, Arbitrary)]
 struct Input {

@@ -1,0 +1,10 @@
+[workspace]
+git_release_enable = true
+git_release_type = "auto"
+pr_labels = ["release"]
+release = true
+publish = true
+changelog_update = true
+
+[[package]]
+name = "quantum-box"
