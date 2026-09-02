@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-description = "Reference implementation of an anonymous sealed box with a post-quantum hybrid KEM (ML-KEM + X25519)"
+description = "Anonymous sealed box with a post-quantum hybrid KEM (ML-KEM + X25519)"
 exclude = ["header-full.jpg"]
 
 [dependencies]

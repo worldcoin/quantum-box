@@ -24,7 +24,7 @@ This implementation does not roll its own cryptography, there are no cryptograph
 The library owns its randomness: sealing and key generation draw from the operating system CSPRNG internally, so there is no RNG to pass in or misuse.
 
 ```rust
-use holocron::{SecretKey, PublicKey};
+use quantum_box::{SecretKey, PublicKey};
 
 let sk = SecretKey::generate().unwrap();
 let pk = sk.public_key();
