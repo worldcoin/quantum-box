@@ -17,6 +17,7 @@ This implementation does not roll its own cryptography, there are no cryptograph
 2. The Key Encapsulation Mechanism (KEM) choice is `X-Wing` [draft-connolly-cfrg-xwing-kem-06](https://datatracker.ietf.org/doc/html/draft-connolly-cfrg-xwing-kem-06) and [paper](https://eprint.iacr.org/2024/039) which is IND-CCA secure (internally it uses `ML-KEM-768` prev. `Kyber-768` and `X25519` curve). The X-Wing implementation comes from `RustCrypto`'s [crate](https://github.com/RustCrypto/KEMs/tree/master/x-wing).
 3. The KDF is `HKDF-SHA-256`, whose 128-bit security level is consistent with the strength of `X-Wing`'s components: its `X25519` half provides roughly 128-bit classical security, and its `ML-KEM-768` half targets NIST PQC security category 3.
 4. The AEAD is `ChaCha20-Poly1305` which is constant time on any hardware. The decision is to maximize portability.
+5. Opinionated encoding and an explicit header are introduced to carry metadata on the encoding of the ciphertext. The header is not encrypted, and is authenticated as AD in the AEAD.
 
 
 ## Example

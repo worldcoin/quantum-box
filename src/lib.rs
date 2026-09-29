@@ -25,8 +25,8 @@ pub(crate) type Kdf = HkdfSha256;
 
 /// Internal wire format version. Applicable only to this implementation.
 ///
-/// Bumped only on a breaking encoding change.
-const VERSION: u8 = 0x01;
+/// Bumped when existing ciphertext can no longer be opened.
+const VERSION: u8 = 0x02;
 /// The HPKE algorithm ID: X-Wing (ML-KEM-768 and X25519)
 ///
 /// The explicit ID (`0x647A`) is assigned in the [IANA HPKE KEM Identifiers Registry](https://www.iana.org/assignments/hpke/hpke.xhtml).
@@ -49,15 +49,69 @@ const AEAD_ID: u16 = 0x0003;
 /// All values are encoded big-endian.
 ///
 /// # Security
-/// The header is neither encrypted nor authenticated, it is added only
-/// to future-proof for the cryptographic suite used and encoding format.
-const HEADER: [u8; 7] = {
-    let kem = KEM_ID.to_be_bytes();
-    let kdf = KDF_ID.to_be_bytes();
-    let aead = AEAD_ID.to_be_bytes();
-    [VERSION, kem[0], kem[1], kdf[0], kdf[1], aead[0], aead[1]]
-};
-const HEADER_LEN: usize = HEADER.len();
+/// The header is authenticated as HPKE associated data but is not encrypted.
+struct Header {
+    version: u8,
+    kem: u16,
+    kdf: u16,
+    aead: u16,
+}
+
+impl Default for Header {
+    fn default() -> Self {
+        Self {
+            version: VERSION,
+            kem: KEM_ID,
+            kdf: KDF_ID,
+            aead: AEAD_ID,
+        }
+    }
+}
+
+impl Header {
+    const LEN: usize = 7;
+
+    fn as_bytes(&self) -> [u8; Self::LEN] {
+        let kem = self.kem.to_be_bytes();
+        let kdf = self.kdf.to_be_bytes();
+        let aead = self.aead.to_be_bytes();
+        [
+            self.version,
+            kem[0],
+            kem[1],
+            kdf[0],
+            kdf[1],
+            aead[0],
+            aead[1],
+        ]
+    }
+
+    fn from_bytes(bytes: [u8; Self::LEN]) -> Result<Self, Error> {
+        let [version, kem0, kem1, kdf0, kdf1, aead0, aead1] = bytes;
+
+        if version != VERSION {
+            return Err(Error::UnsupportedVersion(version));
+        }
+
+        let (kem, kdf, aead) = (
+            u16::from_be_bytes([kem0, kem1]),
+            u16::from_be_bytes([kdf0, kdf1]),
+            u16::from_be_bytes([aead0, aead1]),
+        );
+
+        if (kem, kdf, aead) != (KEM_ID, KDF_ID, AEAD_ID) {
+            return Err(Error::UnsupportedSuite);
+        }
+
+        Ok(Self {
+            version,
+            kem,
+            kdf,
+            aead,
+        })
+    }
+}
+
 /// X-Wing encapsulated key size: ML-KEM-768 ciphertext (1088) + X25519 (32).
 ///
 /// See also `XWing::EncappedKey::OutputSize`
@@ -80,8 +134,8 @@ impl PublicKey {
     /// - `recipient`: The public key of the recipient.
     /// - `plaintext`: The plaintext message to be encrypted.
     /// - `info`: Optional application-supplied information. This is usually global
-    ///   context (e.g. "a backup of X app"). The exact same `info` must be provided for sealing and unsealing,
-    ///   otherwise unsealing will fail.
+    ///   context (e.g. "a backup of X app"). The exact same `info` must be provided
+    ///   for sealing and unsealing, otherwise unsealing will fail.
     ///
     /// # Errors
     /// - [`Error::Rng`] if the operating system CSPRNG is unavailable.
@@ -106,20 +160,19 @@ impl PublicKey {
             return Err(Error::InfoExceedsSize);
         }
 
+        let header = Header::default().as_bytes();
         let (enc, ciphertext) = single_shot_seal_with_rng::<Aead, Kdf, XKem>(
             &OpModeS::Base,
             recipient.as_hpke(),
             info.unwrap_or_default(),
             plaintext,
-            // Making the explicit opinionated decision of not exposing associated data (AAD)
-            // (RFC 5116 authenticated buit not encrypted data) in this reference implementation because
-            // the use cases it intends to cover warrant a global context (i.e. `info`).
-            &[],
+            // The header is authenticated as AAD in the AEAD
+            &header,
             &mut rng::os_csprng()?,
         )?;
         let enc = enc.to_bytes();
-        let mut out = Vec::with_capacity(HEADER_LEN + enc.len() + ciphertext.len());
-        out.extend_from_slice(&HEADER);
+        let mut out = Vec::with_capacity(Header::LEN + enc.len() + ciphertext.len());
+        out.extend_from_slice(&header);
         out.extend_from_slice(enc.as_slice());
         out.extend_from_slice(&ciphertext);
         Ok(out)
@@ -134,7 +187,7 @@ impl SecretKey {
     ///
     /// # Errors
     /// - [`Error::EmptyCiphertext`] if the ciphertext is empty.
-    /// - [`Error::Decode`] if the ciphertext is invalid
+    /// - [`Error::Decode`] if the ciphertext is too short or malformed.
     /// - [`Error::UnsupportedVersion`] if the header specifies an unsupported version.
     /// - [`Error::UnsupportedSuite`] if the header specifices an unsupported cryptographic suite.
     /// - [`Error::Unseal`] if the ciphertext cannot be unsealed.
@@ -151,25 +204,11 @@ impl SecretKey {
             return Err(Error::EmptyCiphertext);
         }
 
-        let Some((&[version, kem0, kem1, kdf0, kdf1, aead0, adead1], ciphertext)) =
-            ciphertext.split_first_chunk::<HEADER_LEN>()
-        else {
+        let Some((header, ciphertext)) = ciphertext.split_first_chunk::<{ Header::LEN }>() else {
             return Err(Error::Decode);
         };
 
-        if version != VERSION {
-            return Err(Error::UnsupportedVersion(version));
-        }
-
-        let (kem_id, kdf_id, aead_id) = (
-            u16::from_be_bytes([kem0, kem1]),
-            u16::from_be_bytes([kdf0, kdf1]),
-            u16::from_be_bytes([aead0, adead1]),
-        );
-
-        if (kem_id, kdf_id, aead_id) != (KEM_ID, KDF_ID, AEAD_ID) {
-            return Err(Error::UnsupportedSuite);
-        }
+        let header = Header::from_bytes(*header)?;
 
         let Some((enc_bytes, ciphertext)) = ciphertext.split_first_chunk::<ENC_LEN>() else {
             return Err(Error::Decode);
@@ -183,8 +222,7 @@ impl SecretKey {
             &enc,
             info.unwrap_or_default(),
             ciphertext,
-            // Explicitly empty associated data
-            &[],
+            &header.as_bytes(),
         )?;
 
         Ok(plaintext)
@@ -248,7 +286,8 @@ impl From<HpkeError> for Error {
 #[expect(clippy::unwrap_used, reason = "clearer in tests")]
 #[cfg(test)]
 mod tests {
-    use super::{ENC_LEN, Error, HEADER, HEADER_LEN, MAX_INFO_LEN, PublicKey, SecretKey, VERSION};
+    use super::{ENC_LEN, Error, Header, MAX_INFO_LEN, PublicKey, SecretKey};
+    use hpke::{OpModeS, Serializable, single_shot_seal_with_rng};
     use std::collections::HashSet;
 
     /// `Poly-1305` authentication tag length
@@ -361,7 +400,7 @@ mod tests {
         let sealed = PublicKey::seal(&pk, b"this message will self-destruct", None).unwrap();
 
         // Valid header, but the encapsulated key is cut short.
-        let truncated = &sealed[..HEADER_LEN + 10];
+        let truncated = &sealed[..Header::LEN + 10];
 
         assert_eq!(SecretKey::unseal(&sk, truncated, None), Err(Error::Decode));
     }
@@ -372,7 +411,7 @@ mod tests {
 
         let sealed = PublicKey::seal(&pk, b"hello there", None).unwrap();
         let mut bad = sealed.clone();
-        let bad_version = VERSION.wrapping_add(1);
+        let bad_version = 1;
         bad[0] = bad_version;
 
         assert_eq!(
@@ -386,22 +425,47 @@ mod tests {
         let (sk, pk) = keypair(&[1u8; 32]);
 
         let sealed = PublicKey::seal(&pk, b"hello there", None).unwrap();
-        let mut bad = sealed.clone();
-        bad[1] ^= 0xFF; // Corrupt a KEM ID byte
+        for offset in [1, 3, 5] {
+            let mut bad = sealed.clone();
+            bad[offset] ^= 0xFF;
 
-        assert_eq!(
-            SecretKey::unseal(&sk, &bad, None),
-            Err(Error::UnsupportedSuite)
-        );
+            assert_eq!(
+                SecretKey::unseal(&sk, &bad, None),
+                Err(Error::UnsupportedSuite),
+                "suite field at offset {offset} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn unseal_rejects_ciphertext_without_authenticated_header() {
+        let (sk, pk) = keypair(&[1u8; 32]);
+        let (enc, ciphertext) = single_shot_seal_with_rng::<super::Aead, super::Kdf, super::XKem>(
+            &OpModeS::Base,
+            pk.as_hpke(),
+            &[],
+            b"hello there",
+            &[],
+            &mut super::rng::os_csprng().unwrap(),
+        )
+        .unwrap();
+        let mut sealed = Header::default().as_bytes().to_vec();
+        sealed.extend_from_slice(&enc.to_bytes());
+        sealed.extend_from_slice(&ciphertext);
+
+        assert_eq!(SecretKey::unseal(&sk, &sealed, None), Err(Error::Unseal));
     }
 
     #[test]
     fn seal_prepends_wire_header() {
         let (_sk, pk) = keypair(&[1u8; 32]);
+        let expected = [0x02, 0x64, 0x7A, 0x00, 0x01, 0x00, 0x03];
 
         let sealed = PublicKey::seal(&pk, b"hello there", None).unwrap();
 
-        assert_eq!(&sealed[..HEADER_LEN], &HEADER);
+        assert_eq!(Header::default().as_bytes(), expected);
+        assert_eq!(Header::from_bytes(expected).unwrap().as_bytes(), expected);
+        assert_eq!(&sealed[..Header::LEN], &expected);
     }
 
     #[test]
@@ -412,7 +476,7 @@ mod tests {
         let sealed = PublicKey::seal(&pk, msg, None).unwrap();
 
         // HEADER || ENCAPSULATED_KEY || len(plaintext + authentication tag)
-        assert_eq!(sealed.len(), HEADER_LEN + ENC_LEN + msg.len() + TAG_LEN);
+        assert_eq!(sealed.len(), Header::LEN + ENC_LEN + msg.len() + TAG_LEN);
     }
 
     #[test]
@@ -439,7 +503,7 @@ mod tests {
         let mut enc_keys = HashSet::new();
         for _ in 0..64 {
             let sealed = PublicKey::seal(&pk, msg, Some(info)).unwrap();
-            let enc = sealed[HEADER_LEN..HEADER_LEN + ENC_LEN].to_vec();
+            let enc = sealed[Header::LEN..Header::LEN + ENC_LEN].to_vec();
             assert!(
                 enc_keys.insert(enc),
                 "encapsulated key repeated: encapsulation randomness was reused"
